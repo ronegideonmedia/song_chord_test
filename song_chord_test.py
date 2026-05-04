@@ -1,420 +1,183 @@
-import customtkinter as ctk
+import streamlit as st
 import re
 
-# # --- Configuration & Theme ---
-ctk.set_appearance_mode("Dark")  # Force Dark Mode
-ctk.set_default_color_theme("dark-blue")  # Basic theme
+# Page Config
+st.set_page_config(
+    page_title="Chords & Lyrics Transposer",
+    page_icon="🎵",
+    layout="centered"
+)
 
-# # Define specific colors from the image
-COLOR_BG = "#101010"       # Background ng buong app
-COLOR_NAV_BG = "#1A1A1A"   # Background ng segmented button container
-COLOR_ACCENT = "#3B8ED0"   # Kulay blue para sa selected tab/chords
-COLOR_TEXT_MAIN = "#FFFFFF" # Puti para sa main titles/lyrics
-COLOR_TEXT_SUB = "#AAAAAA"  # Gray para sa "by Artist"
-COLOR_INPUT_BG = "#1A1A1A" # Background ng search bar
-COLOR_BORDER = "#2A2A2A"   # Border color
-COLOR_HOVER = "#1F1F1F"    # Background color kapag naka-hover
+# Custom CSS for Dark Theme & Styling
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #101010;
+        color: #FFFFFF;
+    }
+    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+        color: #FFFFFF;
+        font-weight: bold;
+    }
+    .song-card {
+        background-color: #1A1A1A;
+        border: 1px solid #2A2A2A;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+    pre {
+        background-color: #1A1A1A !important;
+        border: 1px solid #2A2A2A;
+        padding: 15px;
+        border-radius: 8px;
+        color: #FFFFFF !important;
+        font-family: 'Courier New', Courier, monospace;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-class SongChordsApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
+# Session State Initialization
+if 'all_songs' not in st.session_state:
+    st.session_state['all_songs'] = [
+        {
+            "title": "Sample Song",
+            "artist": "Sample Artist",
+            "lyrics": "Verse 1\n<C>This is a <F>sample line with chords."
+        }
+    ]
+if 'active_song_idx' not in st.session_state:
+    st.session_state['active_song_idx'] = None
+if 'transpose_level' not in st.session_state:
+    st.session_state['transpose_level'] = 0
 
-        # # --- Window Setup ---
-        self.title("Chords & Lyrics Transposer")
-        self.geometry("450x800") # Mobile-like aspect ratio
-        self.configure(fg_color=COLOR_BG)
+def transpose_chord(chord_str, semitones):
+    scale = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    
+    # Extract root note and remainder (e.g. C#m7 -> root: C#, remainder: m7)
+    if len(chord_str) > 1 and chord_str[1] in ["#", "b"]:
+        root = chord_str[:2]
+        remainder = chord_str[2:]
+    else:
+        root = chord_str[0]
+        remainder = chord_str[1:]
 
-        # # Custom font styles
-        self.font_title = ctk.CTkFont(family="Inter", size=19, weight="bold")
-        self.font_header = ctk.CTkFont(family="Inter", size=15, weight="bold")
-        self.font_subheader = ctk.CTkFont(family="Inter", size=12)
-        self.font_lyrics = ctk.CTkFont(family="Courier New", size=13) # Monospace for chords and lyrics
+    # Normalize flats
+    flat_to_sharp = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+    if root in flat_to_sharp:
+        root = flat_to_sharp[root]
 
-        # # Data Storage
-        self.all_songs = [] 
-        self.favorites = []
-        self.playlist = []
+    if root in scale:
+        idx = scale.index(root)
+        new_idx = (idx + semitones) % 12
+        return scale[new_idx] + remainder
+    return chord_str
+
+def render_song_view():
+    song = st.session_state['all_songs'][st.session_state['active_song_idx']]
+    
+    st.subheader(f"{song['title']} 🎵")
+    st.caption(f"by {song['artist']}")
+    
+    st.write("---")
+    
+    # Transpose Controls
+    cols = st.columns([1, 1, 1, 3])
+    with cols[0]:
+        if st.button("➖", key="trans_down"):
+            st.session_state['transpose_level'] -= 1
+    with cols[1]:
+        if st.button("➕", key="trans_up"):
+            st.session_state['transpose_level'] += 1
+    with cols[2]:
+        if st.button("Reset", key="trans_reset"):
+            st.session_state['transpose_level'] = 0
+            
+    st.write(f"**Transpose Level:** {st.session_state['transpose_level']:+d}")
+    
+    # Process Lyrics/Chords
+    lyrics = song['lyrics']
+    buffer = ""
+    html_output = "<pre style='color:#FFFFFF;'>"
+    
+    for char in lyrics:
+        if char == "<":
+            if buffer:
+                html_output += buffer
+                buffer = ""
+            continue
+        elif char == ">":
+            if buffer:
+                # Transpose the chord
+                chords = buffer.strip().split()
+                for c in chords:
+                    transposed = transpose_chord(c, st.session_state['transpose_level'])
+                    html_output += f"<span style='color:#3B8ED0; font-weight:bold;'>{transposed}</span> "
+                buffer = ""
+            continue
+        buffer += char
         
-        # Transposition and Editing Tracking
-        self.transpose_level = 0
-        self.active_song = None
-        self.active_song_index = None
-        self.editing_song_index = None
-
-        # # UI Init
-        self.create_ui()
-
-    def create_ui(self):
-        # # --- 1. Top Menu Icon ---
-        self.menu_label = ctk.CTkLabel(self, text="☰", font=("Arial", 24), text_color=COLOR_TEXT_MAIN)
-        self.menu_label.pack(anchor="nw", padx=15, pady=(15, 0))
-
-        # # --- 2. Nav Bar (Segmented Control) ---
-        self.nav_frame = ctk.CTkFrame(self, fg_color=COLOR_NAV_BG, corner_radius=10, border_color=COLOR_BORDER, border_width=1)
-        self.nav_frame.pack(fill="x", padx=15, pady=20)
-
-        self.nav_var = ctk.StringVar(value="Song List")
-        self.nav_bar = ctk.CTkSegmentedButton(self.nav_frame,
-                                              values=["Song List", "Favorites", "Playlist", "Add a Song"],
-                                              command=self.switch_tab,
-                                              variable=self.nav_var,
-                                              fg_color=COLOR_NAV_BG,
-                                              selected_color=COLOR_ACCENT,
-                                              unselected_color=COLOR_NAV_BG,
-                                              text_color=COLOR_TEXT_MAIN,
-                                              font=ctk.CTkFont(family="Inter", size=12),
-                                              corner_radius=8,
-                                              height=40)
-        self.nav_bar.pack(fill="x", padx=5, pady=5)
-
-        # # --- 3. Main Content Area (Tabs) ---
-        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.content_frame.pack(fill="both", expand=True, padx=15)
-
-        self.create_song_list_tab()
-        self.create_add_song_tab()
-        self.create_song_detail_tab() 
-        self.create_placeholder_tabs()
-
-        # # Default tab
-        self.switch_tab("Song List")
-
-    # # --- Tab Creation Functions ---
-
-    def create_song_list_tab(self):
-        self.tab_song_list = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-
-        self.lbl_search_head = ctk.CTkLabel(self.tab_song_list, text="Search Songs", font=self.font_header, text_color=COLOR_TEXT_MAIN)
-        self.lbl_search_head.pack(anchor="w", pady=(0, 5))
-
-        self.entry_search = ctk.CTkEntry(self.tab_song_list,
-                                         placeholder_text="Search by Title or Artist",
-                                         fg_color=COLOR_INPUT_BG,
-                                         border_color=COLOR_BORDER,
-                                         text_color=COLOR_TEXT_MAIN,
-                                         font=self.font_subheader,
-                                         height=35)
-        self.entry_search.pack(fill="x", pady=(0, 20))
-        self.entry_search.bind("<KeyRelease>", self.update_song_display)
-
-        self.song_scroll_frame = ctk.CTkScrollableFrame(self.tab_song_list,
-                                                       fg_color="transparent",
-                                                       label_text="",
-                                                       scrollbar_button_color=COLOR_BORDER,
-                                                       scrollbar_button_hover_color=COLOR_NAV_BG)
-        self.song_scroll_frame.pack(fill="both", expand=True)
-
-        self.update_song_display()
-
-    def create_add_song_tab(self):
-        self.tab_add_song = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-
-        self.lbl_add_head = ctk.CTkLabel(self.tab_add_song, text="Add New Song", font=self.font_header, text_color=COLOR_TEXT_MAIN)
-        self.lbl_add_head.pack(anchor="w", pady=(0, 15))
-
-        self.entry_title = self.create_form_entry("Song Title", "Enter title")
-        self.entry_artist = self.create_form_entry("Artist", "Enter artist name")
-
-        lbl_lyrics = ctk.CTkLabel(self.tab_add_song, text="Lyrics & Chords (use <chord> e.g., <C>)", font=self.font_subheader, text_color=COLOR_TEXT_SUB)
-        lbl_lyrics.pack(anchor="w", pady=(10, 0))
-        self.txt_lyrics = ctk.CTkTextbox(self.tab_add_song, fg_color=COLOR_INPUT_BG, border_color=COLOR_BORDER, border_width=1, text_color=COLOR_TEXT_MAIN, font=self.font_subheader, height=200)
-        self.txt_lyrics.pack(fill="x", pady=(5, 15))
-
-        self.btn_save = ctk.CTkButton(self.tab_add_song, text="Save Song", command=self.save_song, fg_color=COLOR_ACCENT, text_color=COLOR_TEXT_MAIN, font=self.font_header, height=40)
-        self.btn_save.pack(fill="x", pady=10)
-
-    def create_song_detail_tab(self):
-        self.tab_song_detail = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-
-        self.btn_back = ctk.CTkButton(self.tab_song_detail, text="< Back", command=self.back_to_list, width=80, fg_color="transparent", text_color=COLOR_TEXT_SUB)
-        self.btn_back.pack(anchor="w", pady=(0, 10))
-
-        # Header Frame for Title and Artist on the same line
-        self.header_frame = ctk.CTkFrame(self.tab_song_detail, fg_color="transparent")
-        self.header_frame.pack(anchor="w", pady=(0, 5))
-
-        self.lbl_detail_title = ctk.CTkLabel(self.header_frame, text="", font=ctk.CTkFont(family="Inter", size=13, weight="bold"), text_color=COLOR_TEXT_MAIN)
-        self.lbl_detail_title.pack(side="left")
-
-        self.lbl_detail_artist = ctk.CTkLabel(self.header_frame, text="", font=ctk.CTkFont(family="Inter", size=11), text_color=COLOR_TEXT_SUB)
-        self.lbl_detail_artist.pack(side="left", padx=(5, 0))
+    if buffer:
+        html_output += buffer
         
-        self.btn_edit_song = ctk.CTkButton(self.header_frame, text="Edit", width=40, height=20, command=self.open_edit_tab, fg_color=COLOR_NAV_BG, text_color=COLOR_TEXT_MAIN, font=ctk.CTkFont(family="Inter", size=10))
-        self.btn_edit_song.pack(side="left", padx=(15, 0))
+    html_output += "</pre>"
+    st.markdown(html_output, unsafe_allow_html=True)
+    
+    if st.button("⬅️ Back to List"):
+        st.session_state['active_song_idx'] = None
+        st.session_state['transpose_level'] = 0
+        st.rerun()
 
-        # Transpose Frame (contains +, -, and Reset buttons)
-        self.transpose_frame = ctk.CTkFrame(self.tab_song_detail, fg_color="transparent")
-        self.transpose_frame.pack(anchor="w", pady=(0, 10))
-
-        self.btn_transpose_down = ctk.CTkButton(self.transpose_frame, text="-", width=35, height=25, command=self.transpose_down, fg_color=COLOR_NAV_BG, text_color=COLOR_TEXT_MAIN, font=self.font_header)
-        self.btn_transpose_down.pack(side="left", padx=(0, 5))
-
-        self.lbl_transpose = ctk.CTkLabel(self.transpose_frame, text="Transpose: 0", font=self.font_subheader, text_color=COLOR_TEXT_SUB)
-        self.lbl_transpose.pack(side="left", padx=5)
-
-        self.btn_reset_transpose = ctk.CTkButton(self.transpose_frame, text="Reset", width=40, height=25, command=self.reset_transpose, fg_color=COLOR_NAV_BG, text_color=COLOR_TEXT_SUB, font=ctk.CTkFont(family="Inter", size=10))
-        self.btn_reset_transpose.pack(side="left", padx=(5, 5))
-
-        self.btn_transpose_up = ctk.CTkButton(self.transpose_frame, text="+", width=35, height=25, command=self.transpose_up, fg_color=COLOR_NAV_BG, text_color=COLOR_TEXT_MAIN, font=self.font_header)
-        self.btn_transpose_up.pack(side="left", padx=(0, 0))
-
-        self.txt_detail_lyrics = ctk.CTkTextbox(self.tab_song_detail, fg_color=COLOR_INPUT_BG, border_color=COLOR_BORDER, border_width=1, text_color=COLOR_TEXT_MAIN, font=self.font_lyrics, height=430)
-        self.txt_detail_lyrics.bind("<Key>", lambda e: "break")  # Keeps it read-only but text visible
-        self.txt_detail_lyrics.pack(fill="both", expand=True, pady=5)
-
-    def create_placeholder_tabs(self):
-        self.tab_favorites = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        ctk.CTkLabel(self.tab_favorites, text="Favorites list goes here.", text_color=COLOR_TEXT_SUB).pack(pady=20)
-
-        self.tab_playlist = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        ctk.CTkLabel(self.tab_playlist, text="Your active playlist queue goes here.", text_color=COLOR_TEXT_SUB).pack(pady=20)
-
-    def create_form_entry(self, label_text, placeholder):
-        lbl = ctk.CTkLabel(self.tab_add_song, text=label_text, font=self.font_subheader, text_color=COLOR_TEXT_SUB)
-        lbl.pack(anchor="w", pady=(10, 0))
-        entry = ctk.CTkEntry(self.tab_add_song, placeholder_text=placeholder, fg_color=COLOR_INPUT_BG, border_color=COLOR_BORDER, text_color=COLOR_TEXT_MAIN, font=self.font_subheader, height=35)
-        entry.pack(fill="x", pady=(5, 0))
-        return entry
-
-    # # --- Tab & Window Logic ---
-
-    def switch_tab(self, selected_tab):
-        # Reset edit-mode when leaving tab
-        if selected_tab != "Add a Song":
-            self.editing_song_index = None
-            if hasattr(self, 'lbl_add_head'):
-                self.lbl_add_head.configure(text="Add New Song")
-                self.btn_save.configure(text="Save Song")
-
-        self.tab_song_list.pack_forget()
-        self.tab_add_song.pack_forget()
-        self.tab_favorites.pack_forget()
-        self.tab_playlist.pack_forget()
-        self.tab_song_detail.pack_forget() 
-
-        if selected_tab == "Song List":
-            self.tab_song_list.pack(fill="both", expand=True)
-            self.update_song_display()
-        elif selected_tab == "Add a Song":
-            self.tab_add_song.pack(fill="both", expand=True)
-        elif selected_tab == "Favorites":
-            self.tab_favorites.pack(fill="both", expand=True)
-        elif selected_tab == "Playlist":
-            self.tab_playlist.pack(fill="both", expand=True)
-
-    def open_song_detail(self, song):
-        self.active_song = song
+def render_main_app():
+    # If a song is actively being viewed
+    if st.session_state['active_song_idx'] is not None:
+        render_song_view()
+    else:
+        tab_list, tab_add = st.tabs(["🎵 Song List", "➕ Add a Song"])
         
-        try:
-            self.active_song_index = self.all_songs.index(song)
-        except ValueError:
-            self.active_song_index = None
-
-        self.transpose_level = 0
-        self.tab_song_list.pack_forget()
-        self.tab_song_detail.pack(fill="both", expand=True)
-        self.render_song_detail()
-
-    def open_edit_tab(self):
-        if not self.active_song or self.active_song_index is None:
-            return
-
-        self.editing_song_index = self.active_song_index
-        self.entry_title.delete(0, "end")
-        self.entry_title.insert(0, self.active_song['title'])
-        
-        self.entry_artist.delete(0, "end")
-        self.entry_artist.insert(0, self.active_song['artist'])
-        
-        self.txt_lyrics.delete("1.0", "end")
-        self.txt_lyrics.insert("1.0", self.active_song['lyrics'])
-        
-        self.lbl_add_head.configure(text="Edit Song")
-        self.btn_save.configure(text="Update Song")
-        
-        # FIXED: Removed the assignment 'self.nav_var = "Add a Song"' 
-        # so it continues to use the StringVar object methods
-        self.nav_var.set("Add a Song")
-        self.switch_tab("Add a Song")
-
-    def render_song_detail(self):
-        if not self.active_song:
-            return
-
-        self.lbl_detail_title.configure(text=self.active_song['title'])
-        self.lbl_detail_artist.configure(text=f"- by {self.active_song['artist']}")
-
-        textbox = self.txt_detail_lyrics
-        tk_text = textbox._textbox  # Underlying Tkinter widget
-
-        textbox.configure(state="normal")
-        tk_text.delete("1.0", "end")
-
-        # Configure tags for chords
-        tk_text.tag_configure(
-            "chord",
-            foreground=COLOR_ACCENT,
-            font=("Courier New", 13, "bold")
-        )
-
-        # Update Transpose Label text
-        if self.transpose_level == 0:
-            self.lbl_transpose.configure(text="Transpose: 0")
-        elif self.transpose_level > 0:
-            self.lbl_transpose.configure(text=f"Transpose: +{self.transpose_level}")
-        else:
-            self.lbl_transpose.configure(text=f"Transpose: {self.transpose_level}")
-
-        lyrics = self.active_song["lyrics"]
-
-        if not lyrics:
-            tk_text.insert("end", "[No lyrics]")
-            textbox.configure(state="disabled")
-            return
-
-        buffer = ""
-        in_chord = False
-
-        for char in lyrics:
-            if char == "<":
-                if buffer:
-                    tk_text.insert("end", buffer)
-                    buffer = ""
-                in_chord = True
-                continue
-
-            elif char == ">":
-                if buffer:
-                    for chord in buffer.strip().split():
-                        transposed = self.transpose_chord(chord, self.transpose_level)
-                        tk_text.insert("end", transposed, "chord")
-                        tk_text.insert("end", " ")
-                    buffer = ""
-                in_chord = False
-                continue
-
-            buffer += char
-
-        if buffer:
-            tk_text.insert("end", buffer)
-
-        textbox.configure(state="disabled")
-
-    def transpose_chord(self, chord_str, semitones):
-        scale = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-        
-        # Determine the root note of the chord
-        if len(chord_str) > 1 and chord_str[1] in ["#", "b"]:
-            root = chord_str[:2]
-            remainder = chord_str[2:]
-        else:
-            root = chord_str[0]
-            remainder = chord_str[1:]
-
-        # Normalize flats to sharps for consistent scaling
-        flat_to_sharp = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
-        if root in flat_to_sharp:
-            root = flat_to_sharp[root]
-
-        if root in scale:
-            idx = scale.index(root)
-            new_idx = (idx + semitones) % 12
-            return scale[new_idx] + remainder
-        
-        return chord_str
-
-    def transpose_up(self):
-        if self.active_song:
-            self.transpose_level += 1
-            self.render_song_detail()
-
-    def transpose_down(self):
-        if self.active_song:
-            self.transpose_level -= 1
-            self.render_song_detail()
-
-    def reset_transpose(self):
-        if self.active_song:
-            self.transpose_level = 0
-            self.render_song_detail()
-
-    def back_to_list(self):
-        self.tab_song_detail.pack_forget()
-        self.tab_song_list.pack(fill="both", expand=True)
-        self.update_song_display()
-
-    def save_song(self):
-        title = self.entry_title.get().strip()
-        artist = self.entry_artist.get().strip()
-        lyrics = self.txt_lyrics.get("1.0", "end-1c").strip()
-
-        if not title or not artist or not lyrics:
-            print("Error: Fill all fields.")
-            return
-
-        if self.editing_song_index is not None:
-            # Update Existing Song
-            self.all_songs[self.editing_song_index] = {
-                "title": title,
-                "artist": artist,
-                "lyrics": lyrics,
-            }
-            self.active_song = self.all_songs[self.editing_song_index]
-            self.editing_song_index = None
-        else:
-            # Add New Song
-            song_entry = {
-                "title": title,
-                "artist": artist,
-                "lyrics": lyrics,
-            }
-            self.all_songs.append(song_entry)
-
-        # Clear form entries and reset button text
-        self.entry_title.delete(0, "end")
-        self.entry_artist.delete(0, "end")
-        self.txt_lyrics.delete("1.0", "end")
-        
-        self.lbl_add_head.configure(text="Add New Song")
-        self.btn_save.configure(text="Save Song")
-
-        self.nav_var.set("Song List")
-        self.switch_tab("Song List")
-
-    def update_song_display(self, event=None):
-        for widget in self.song_scroll_frame.winfo_children():
-            widget.destroy()
-
-        search_term = self.entry_search.get().lower().strip()
-
-        if search_term:
-            songs_to_show = [s for s in self.all_songs if search_term in s['title'].lower() or search_term in s['artist'].lower()]
-        else:
-            songs_to_show = self.all_songs
-
-        if not songs_to_show:
-             lbl_empty = ctk.CTkLabel(self.song_scroll_frame, text="No songs added yet.", text_color=COLOR_TEXT_SUB, font=self.font_subheader)
-             lbl_empty.pack(pady=20)
-             return
-
-        for song in songs_to_show:
-            btn_song = ctk.CTkButton(
-                self.song_scroll_frame,
-                text=f"{song['title']}  •  by {song['artist']}",
-                font=ctk.CTkFont(family="Inter", size=12, weight="bold"),
-                fg_color="transparent",
-                hover_color=COLOR_HOVER,
-                text_color=COLOR_TEXT_MAIN,
-                border_color=COLOR_BORDER,
-                border_width=1,
-                corner_radius=6,
-                height=50,
-                anchor="w",
-                command=lambda s=song: self.open_song_detail(s)
-            )
-            btn_song.pack(fill="x", pady=6, padx=5)
-
+        with tab_list:
+            st.header("Search Songs")
+            search_term = st.text_input("Search by Title or Artist", placeholder="Type to search...", label_visibility="collapsed")
+            
+            songs = st.session_state['all_songs']
+            
+            # Filter
+            if search_term:
+                filtered = [s for s in songs if search_term.lower() in s['title'].lower() or search_term.lower() in s['artist'].lower()]
+            else:
+                filtered = songs
+                
+            if not filtered:
+                st.info("No songs added yet.")
+            else:
+                for idx, song in enumerate(filtered):
+                    with st.container():
+                        st.markdown("<div class='song-card'>", unsafe_allow_html=True)
+                        st.markdown(f"**{song['title']}** • *by {song['artist']}*")
+                        
+                        if st.button("View Chords", key=f"view_{idx}"):
+                            actual_idx = st.session_state['all_songs'].index(song)
+                            st.session_state['active_song_idx'] = actual_idx
+                            st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        
+        with tab_add:
+            st.header("Add New Song")
+            title = st.text_input("Song Title")
+            artist = st.text_input("Artist")
+            lyrics = st.text_area("Lyrics & Chords (use <chord> e.g. <C>)", height=250)
+            
+            if st.button("Save Song"):
+                if title and artist and lyrics:
+                    st.session_state['all_songs'].append({
+                        "title": title.strip(),
+                        "artist": artist.strip(),
+                        "lyrics": lyrics.strip()
+                    })
+                    st.success("Song saved successfully!")
+                    st.rerun()
+                else:
+                    st.error("Please fill in all the fields.")
 
 if __name__ == "__main__":
-    app = SongChordsApp()
-    app.mainloop()
+    render_main_app()
